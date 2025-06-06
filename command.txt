@@ -1,0 +1,1 @@
+curl -sO https://jenkins.phazite.space/jnlpJars/agent.jar;java -jar agent.jar -url https://jenkins.phazite.space/ -secret c69d5515e0277316b4209b09ed80b51a1e5e75b0c07abcd8fe8aa6b3fec3c875 -name "python-agent-1" -webSocket -workDir "/root/jenkins-agent"
