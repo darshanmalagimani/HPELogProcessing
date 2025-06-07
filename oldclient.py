@@ -165,7 +165,7 @@ def get_minio_client():
             os.getenv("MINIO_ENDPOINT"),
             access_key=os.getenv("MINIO_ACCESS_KEY"),
             secret_key=os.getenv("MINIO_SECRET_KEY"),
-            secure=os.getenv("MINIO_SECURE", "False").lower() in ("true", "1", "t"),
+            secure=os.getenv("MINIO_SECURE", "True").lower() in ("true", "1", "t"),
         )
         logging.info(f"Successfully connected to MinIO at {os.getenv('MINIO_ENDPOINT')}")
         return client
