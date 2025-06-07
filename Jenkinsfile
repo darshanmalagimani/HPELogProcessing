@@ -2,75 +2,104 @@ pipeline {
     agent { label 'python313' }
 
     environment {
-        // Secure credentials (use IDs from Jenkins credentials store)
+        // Secure credentials
         MINIO_ACCESS_KEY = credentials('minio-access-key-id')
         MINIO_SECRET_KEY = credentials('minio-secret-key-id')
-        MONGO_USER = credentials('mongo-user-id')
-        MONGO_PASS = credentials('mongo-pass-id')
+        MONGO_USER       = credentials('mongo-user')
+        MONGO_PASS       = credentials('mongo-pass')
 
-        // Non-secret env variables
-        MONGO_HOST = 'mongodb.phazite.space'
-        MONGO_PORT = '27017'
-        MONGO_DB = 'log_analysis_db'
-
-        MINIO_ENDPOINT = 'minio-access.phazite.space'
-        MINIO_SECURE = 'True'
+        // Non-secret configuration
+        MONGO_HOST       = 'mongodb.phazite.space'
+        MONGO_PORT       = '27017'
+        MONGO_DB         = 'log_analysis_db'
+        MINIO_ENDPOINT   = 'minio-access.phazite.space'
+        MINIO_SECURE     = 'True'
     }
 
     triggers {
-        // Poll Git repository every 1 minute for changes (for example, new folder in machines/)
-        pollSCM('* * * * *')
-    }
-
-    options {
-        timestamps()
-        timeout(time: 30, unit: 'MINUTES')  // Adjust if your jobs take longer
+        GenericTrigger(
+            genericVariables: [
+                [key: 'key', value: '$.Records[0].s3.object.key'],
+                [key: 'bucket', value: '$.Records[0].s3.bucket.name']
+            ],
+            causeString: 'MinIO object upload detected',
+            token: 'minio-trigger',
+            printContributedVariables: true,
+            printPostContent: true
+        )
     }
 
     stages {
-        stage('Checkout') {
+        stage('Clone GitHub Repo') {
             steps {
-                echo '📥 Checking out code...'
-                checkout scm
-                sh 'ls -la'
+                git(
+                    url: 'https://github.com/darshanmalagimani/HPELogProcessing.git',
+                    credentialsId: 'git-credentials'
+                )
             }
         }
 
         stage('Prepare Directories') {
             steps {
-                echo '📂 Creating required directories...'
                 sh '''
+                    mkdir -p machines
                     mkdir -p output
                     mkdir -p processed
-                    echo "✅ Folders 'output' and 'processed' are ready."
                 '''
             }
         }
 
-        stage('Run Old Client') {
+        stage('Download Object from MinIO') {
             steps {
-                echo '🚀 Running oldclient.py to set up environment and preprocessing...'
-                sh 'python3.13 oldclient.py'
+                sh '''
+                    curl https://dl.min.io/client/mc/release/linux-amd64/mc -o mc
+                    chmod +x mc
+                    ./mc alias set myminio http://${MINIO_ENDPOINT} ${MINIO_ACCESS_KEY} ${MINIO_SECRET_KEY}
+                    ./mc cp myminio/${bucket}/${key} machines/
+                '''
             }
         }
 
-        stage('Run Master Script') {
+        stage('Run client.py') {
             steps {
-                echo '🧠 Running master.py for processing and MinIO/MongoDB upload...'
-                sh 'python3.13 master.py'
+                sh 'python3 client.py'
+            }
+        }
+
+        stage('Run master.py using .venv') {
+            steps {
+                sh '''
+                    . .venv/bin/activate
+                    python master.py
+                '''
+            }
+        }
+
+        stage('Zip output and processed') {
+            steps {
+                sh 'zip -r results.zip output processed || true'
+            }
+        }
+
+        stage('Archive Results') {
+            steps {
+                archiveArtifacts artifacts: 'results.zip', fingerprint: true
+            }
+        }
+
+        stage('Cleanup .venv') {
+            steps {
+                sh 'rm -rf .venv'
             }
         }
     }
 
     post {
         always {
-            echo '🌀 Pipeline completed (success or fail).'
-        }
-        success {
-            echo '✅ Jenkins pipeline finished successfully.'
+            echo 'Pipeline execution completed.'
         }
         failure {
-            echo '❌ Jenkins pipeline failed.'
+            echo 'Pipeline failed.'
         }
     }
 }
