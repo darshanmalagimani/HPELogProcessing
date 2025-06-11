@@ -75,7 +75,7 @@ def check_offline_firmware_update(log_file_path):
 
         if fetch_failed_match and absaroka_match:
             print(f"{log_file_path}: ✅ Success - Both offline conditions met.")
-            return True
+            return False
         else:
             print(f"{log_file_path}: ❌ Failure - Offline conditions not met.")
             return False
