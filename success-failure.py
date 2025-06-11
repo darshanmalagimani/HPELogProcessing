@@ -1,5 +1,5 @@
 import re
-
+import sys
 
 def extract_last_update_type(text):
     """
@@ -39,19 +39,23 @@ def check_firmware_update_status(log_file_path):
         with open(log_file_path, 'r', encoding='utf-8') as file:
             lines = file.readlines()
     except FileNotFoundError:
-        return f"{log_file_path}: ❌ Error - File not found."
+        print(f"{log_file_path}: ❌ Error - File not found.")
+        return False
 
     fw_state_pattern = re.compile(r'Updating iLO with fwInstallState:\s*(\w+)', re.IGNORECASE)
     fw_states = [match.group(1) for line in lines if (match := fw_state_pattern.search(line))]
     
     if not fw_states:
-        return f"{log_file_path}: ❌ Failure - Missing 'Updating iLO with fwInstallState:' line."
+        print(f"{log_file_path}: ❌ Failure - Missing 'Updating iLO with fwInstallState:' line.")
+        return False
 
     final_state = fw_states[-1]
     if final_state == "Activated":
-        return f"{log_file_path}:Success - Firmware update activated."
+        print(f"{log_file_path}: ✅ Success - Firmware update activated.")
+        return True
     else:
-        return f"{log_file_path}:Failure - Final fwInstallState was '{final_state}'."
+        print(f"{log_file_path}: ❌ Failure - Final fwInstallState was '{final_state}'.")
+        return False
 
 def check_offline_firmware_update(log_file_path):
     """Checks offline firmware update status using two log markers."""
@@ -70,14 +74,18 @@ def check_offline_firmware_update(log_file_path):
         absaroka_match = absaroka_complete_pattern.search(log_data)
 
         if fetch_failed_match and absaroka_match:
-            return f"{log_file_path}:Success - Both offline conditions met."
+            print(f"{log_file_path}: ✅ Success - Both offline conditions met.")
+            return True
         else:
-            return f"{log_file_path}:Failure - Offline conditions not met."
+            print(f"{log_file_path}: ❌ Failure - Offline conditions not met.")
+            return False
 
     except FileNotFoundError:
-        return f"{log_file_path}: ❌ Error - File not found."
+        print(f"{log_file_path}: ❌ Error - File not found.")
+        return False
     except Exception as e:
-        return f"{log_file_path}: ❌ Error - {str(e)}"
+        print(f"{log_file_path}: ❌ Error - {str(e)}")
+        return False
 
 def determine_update_type_and_check(installsetlog, cidebug):
     """
@@ -91,18 +99,21 @@ def determine_update_type_and_check(installsetlog, cidebug):
         update_type = extract_last_update_type(log_data)
 
         if update_type == "Online" or update_type == "online":
-            result = check_firmware_update_status(cidebug)
+            success = check_firmware_update_status(cidebug)
         elif update_type == "Offline" or update_type == "offline":
-            result = check_offline_firmware_update(cidebug)
+            success = check_offline_firmware_update(cidebug)
         else:
-            return f"{cidebug}: ⚠️ Could not determine firmware update type."
+            print(f"{cidebug}: ⚠️ Could not determine firmware update type.")
+            success = False
 
-        return f"{result} [{update_type}]"
+        return success
 
     except FileNotFoundError:
-        return f"{cidebug}: ❌ Error - File not found."
+        print(f"{cidebug}: ❌ Error - File not found.")
+        return False
     except Exception as e:
-        return f"{cidebug}: ❌ Error - {str(e)}"
+        print(f"{cidebug}: ❌ Error - {str(e)}")
+        return False
 
 # Example usage
 if __name__ == "__main__":
@@ -110,5 +121,10 @@ if __name__ == "__main__":
     
     installsetlog = "installSetLogs.log"
     log_file = "ciDebug.log"
-    result = determine_update_type_and_check(installsetlog, log_file)
-    print(result)
+    success = determine_update_type_and_check(installsetlog, log_file)
+    if success:
+        sys.exit(0)
+    else:
+        sys.exit(1)
+
+
