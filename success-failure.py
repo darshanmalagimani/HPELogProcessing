@@ -49,9 +49,9 @@ def check_firmware_update_status(log_file_path):
 
     final_state = fw_states[-1]
     if final_state == "Activated":
-        return f"{log_file_path}: ✅ Success - Firmware update activated."
+        return f"{log_file_path}:Success - Firmware update activated."
     else:
-        return f"{log_file_path}: ❌ Failure - Final fwInstallState was '{final_state}'."
+        return f"{log_file_path}:Failure - Final fwInstallState was '{final_state}'."
 
 def check_offline_firmware_update(log_file_path):
     """Checks offline firmware update status using two log markers."""
@@ -70,9 +70,9 @@ def check_offline_firmware_update(log_file_path):
         absaroka_match = absaroka_complete_pattern.search(log_data)
 
         if fetch_failed_match and absaroka_match:
-            return f"{log_file_path}: ✅ Success - Both offline conditions met."
+            return f"{log_file_path}:Success - Both offline conditions met."
         else:
-            return f"{log_file_path}: ❌ Failure - Offline conditions not met."
+            return f"{log_file_path}:Failure - Offline conditions not met."
 
     except FileNotFoundError:
         return f"{log_file_path}: ❌ Error - File not found."
