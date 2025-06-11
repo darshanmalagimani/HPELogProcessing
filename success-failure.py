@@ -39,14 +39,14 @@ def check_firmware_update_status(log_file_path):
         with open(log_file_path, 'r', encoding='utf-8') as file:
             lines = file.readlines()
     except FileNotFoundError:
-        print(f"{log_file_path}: ❌ Error - File not found.")
+        print(f"{log_file_path}: Error - File not found.")
         return False
 
     fw_state_pattern = re.compile(r'Updating iLO with fwInstallState:\s*(\w+)', re.IGNORECASE)
     fw_states = [match.group(1) for line in lines if (match := fw_state_pattern.search(line))]
     
     if not fw_states:
-        print(f"{log_file_path}: ❌ Failure - Missing 'Updating iLO with fwInstallState:' line.")
+        print(f"{log_file_path}: Failure - Missing 'Updating iLO with fwInstallState:' line.")
         return False
 
     final_state = fw_states[-1]
@@ -75,16 +75,16 @@ def check_offline_firmware_update(log_file_path):
 
         if fetch_failed_match and absaroka_match:
             print(f"{log_file_path}: ✅ Success - Both offline conditions met.")
-            return False
+            return True
         else:
             print(f"{log_file_path}: ❌ Failure - Offline conditions not met.")
             return False
 
     except FileNotFoundError:
-        print(f"{log_file_path}: ❌ Error - File not found.")
+        print(f"{log_file_path}: Error - File not found.")
         return False
     except Exception as e:
-        print(f"{log_file_path}: ❌ Error - {str(e)}")
+        print(f"{log_file_path}: Error - {str(e)}")
         return False
 
 def determine_update_type_and_check(installsetlog, cidebug):
@@ -103,16 +103,16 @@ def determine_update_type_and_check(installsetlog, cidebug):
         elif update_type == "Offline" or update_type == "offline":
             success = check_offline_firmware_update(cidebug)
         else:
-            print(f"{cidebug}: ⚠️ Could not determine firmware update type.")
+            print(f"{cidebug}: Could not determine firmware update type.")
             success = False
 
         return success
 
     except FileNotFoundError:
-        print(f"{cidebug}: ❌ Error - File not found.")
+        print(f"{cidebug}: Error - File not found.")
         return False
     except Exception as e:
-        print(f"{cidebug}: ❌ Error - {str(e)}")
+        print(f"{cidebug}: Error - {str(e)}")
         return False
 
 # Example usage
