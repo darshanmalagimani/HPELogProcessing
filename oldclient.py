@@ -40,7 +40,7 @@ except ImportError as e:
 logging.basicConfig(
     level=logging.INFO,
     format= 
-    '%(asctime)s - %(levelname)s - %(message)s  ',
+    ' %(asctime)s - %(levelname)s - %(message)s  ',
     handlers=[
         logging.FileHandler("project_run.log"),
         logging.StreamHandler()
@@ -415,7 +415,6 @@ def main():
     print_section("Starting oldclient.py")
 
     # Define paths
-    base_source_dir = "./machines"
     base_output_dir = "./output"
     installsetlog_path = os.path.join(base_output_dir, "installSetLogs.log")
     cidebug_path = os.path.join(base_output_dir, "ciDebug.log")
@@ -431,14 +430,23 @@ def main():
     # 3. Prepare machine (dummy for now, replace with actual logic)
     print_section("Preparing Machine")
     try:
-        # Assuming shared_prepare_machine takes machine_name and returns a path or success status
-        # For this example, let's simulate creating dummy log files
         os.makedirs(base_output_dir, exist_ok=True)
+
+        # --- SIMULATE SUCCESS OR FAILURE HERE ---
+        # To simulate SUCCESS:
+        # with open(installsetlog_path, "w") as f:
+        #     f.write('{"update_type": "Offline"}')
+        # with open(cidebug_path, "w") as f:
+        #     f.write('fetchFailedComponentList Total number of failed components for server name: xxx, bay yyy uuid: zzz 0\nAbsaroka Firmware update is complete for server: aaa')
+        # print_success("Dummy log files created for SUCCESS testing.")
+
+        # To simulate FAILURE (uncomment the following lines and comment out the SUCCESS lines above):
         with open(installsetlog_path, "w") as f:
-            f.write('{"update_type": "Offline"}') # Or "Online"
+            f.write('{"update_type": "Offline"}')
         with open(cidebug_path, "w") as f:
-            f.write('fetchFailedComponentList Total number of failed components for server name: xxx, bay yyy uuid: zzz 0\nAbsaroka Firmware update is complete for server: aaa')
-        print_success("Dummy log files created for testing.")
+            f.write('Some other log content that does not match success conditions')
+        print_warning("Dummy log files created for FAILURE testing.")
+
     except Exception as e:
         print_error(f"Failed to prepare machine: {str(e)}")
         sys.exit(1)
@@ -446,7 +454,6 @@ def main():
     # 4. Run log extraction (dummy for now, replace with actual logic)
     print_section("Running Log Extraction")
     try:
-        # Assuming shared_run_log_extraction processes logs and puts them in base_output_dir
         print_success("Log extraction simulated.")
     except Exception as e:
         print_error(f"Failed during log extraction: {str(e)}")
