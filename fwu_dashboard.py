@@ -169,4 +169,6 @@ with dashboard:
         ]
     )
 
-dashboard.launch()
+# At the very end of fwu_dashboard.py
+dashboard.launch(server_name="0.0.0.0", server_port=7860)
+
