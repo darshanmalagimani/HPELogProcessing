@@ -13,7 +13,6 @@ import traceback
 from minio import Minio
 from minio.error import S3Error
 from dotenv import load_dotenv
-from pymongo import MongoClient
 
 # Load environment variables for MinIO
 load_dotenv()
@@ -21,26 +20,18 @@ load_dotenv()
 # Define a fixed bucket name for all machines
 MINIO_BUCKET_NAME = "hpe-log-analysis"
 
-# Import shared tasks and success-failure check
+# Import shared tasks
 try:
     from shared_tasks import prepare_machine as shared_prepare_machine
     from shared_tasks import run_log_extraction as shared_run_log_extraction
-    # Import determine_update_type_and_check from success-failure.py
-    # Using importlib to handle hyphenated filename
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("success_failure", "success-failure.py")
-    success_failure = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(success_failure)
-    determine_update_type_and_check = success_failure.determine_update_type_and_check
-except ImportError as e:
-    logging.error(f"Failed to import modules: {str(e)}. Make sure shared_tasks.py and success-failure.py are in the same directory.")
+except ImportError:
+    logging.error("Failed to import from shared_tasks.py. Make sure it is in the same directory or Python path.")
     sys.exit(1)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format= 
-    ' %(asctime)s - %(levelname)s - %(message)s  ',
+    format= '%(asctime)s - %(levelname)s - %(message)s  ',
     handlers=[
         logging.FileHandler("project_run.log"),
         logging.StreamHandler()
@@ -84,7 +75,7 @@ def print_error(message):
 def run_command(command, shell=False, check=True, cwd=None, capture_output=True):
     """Run a shell command and return the result, logging output."""
     try:
-        command_str = command if isinstance(command, str) else   '   '.join(command)
+        command_str = command if isinstance(command, str) else  '   '.join(command)
         logging.info(f"Running command: {command_str} in {cwd or os.getcwd()}")
         print_step(f"Running: {command_str}")
         
@@ -366,125 +357,120 @@ def cleanup_directories(base_source_dir_str="./machines", base_output_dir_str=".
 # Removed local definitions of extract_sdmp_file, find_sdmp_files, prepare_machine, run_log_extraction
 # These are now imported from shared_tasks.py
 
-def update_machine_status_counts(success_count, failure_count):
-    """Update machine update status counts in MongoDB."""
+# Removed run_master_process() function as it's no longer called from here.
+# def run_master_process(): ...
+
+def main():
+    """Main function to run Prep, Extract, and Upload steps."""
+    start_time = time.time()
+    print_section("HPE Log Processing Project - Preparation, Extraction & Upload")
+    print(f"Started at: {datetime.now().strftime(   '%Y-%m-%d %H:%M:%S  ')}")
+    
+    # Define base directories
+    base_source_dir = Path("./machines")
+    base_output_dir = Path("./output")
+    
+    overall_success = True
+    
     try:
-        # MongoDB connection using credentials from .env
-        client = MongoClient(
-            host=os.getenv("MONGO_HOST"),
-            port=int(os.getenv("MONGO_PORT")),
-            username=os.getenv("MONGO_USER"),
-            password=os.getenv("MONGO_PASS")
-        )
+        # Step 1: Setup environment
+        if not setup_virtual_environment():
+            print_error("Environment setup failed. Aborting.")
+            return False
         
-        # Get or create database
-        db = client[os.getenv("MONGO_DB")]
+        # Step 2: Clean up old data
+        if not cleanup_directories(str(base_source_dir), str(base_output_dir)):
+            print_warning("Cleanup failed or partially failed. Continuing cautiously...")
+            # Decide if this is critical
+            # return False 
         
-        # Get or create Analytics collection
-        analytics_collection = db["Analytics"]
+        # Step 3: Process each machine (Prepare, Extract & Upload)
+        print_section("Processing Machine Data (Preparation, Extraction & Upload)")
         
-        # Get or create the machine status count document
-        status_doc = analytics_collection.find_one({"_id": "Machine update status count"})
+        if not base_source_dir.is_dir():
+            print_error(f"Source directory '{base_source_dir}' not found. Cannot process machines.")
+            return False
+            
+        machines = [d.name for d in base_source_dir.iterdir() if d.is_dir()]
         
-        if status_doc is None:
-            # Create new document if it doesn't exist
-            analytics_collection.insert_one({
-                "_id": "Machine update status count",
-                "successful_updates": success_count,
-                "failed_updates": failure_count,
-                "last_updated": datetime.now()
-            })
-            logging.info("Created new machine status count document in MongoDB.")
+        if not machines:
+            print_warning(f"No machine directories found in {base_source_dir}")
+            # Exit cleanly if no machines found
+            overall_success = True # No work to do is still a success
         else:
-            # Update existing document
-            analytics_collection.update_one(
-                {"_id": "Machine update status count"},
-                {"$inc": {"successful_updates": success_count, "failed_updates": failure_count}, "$set": {"last_updated": datetime.now()}}
-            )
-            logging.info("Updated machine status count document in MongoDB.")
+            print_step(f"Found {len(machines)} machines to process: {   ',  '.join(sorted(machines))}")
+            
+            prep_extract_failures = []
+            for machine_name in sorted(machines):
+                machine_path = base_source_dir / machine_name
+                print_section(f"Processing {machine_name} - Prep, Extract & Upload")
+                
+                # Prepare the machine using shared function
+                print_step(f"Preparing {machine_name}...")
+                prep_success = shared_prepare_machine(str(machine_path))
+                
+                if not prep_success:
+                    print_warning(f"Preparation failed for {machine_name}. Skipping extraction.")
+                    prep_extract_failures.append(machine_name)
+                    continue # Skip to next machine
+                else:
+                    print_success(f"Preparation successful for {machine_name}.")
+                    
+                # Run log extraction using shared function
+                print_step(f"Running log extraction for {machine_name}...")
+                extract_success = shared_run_log_extraction(machine_name, str(base_source_dir), str(base_output_dir))
+                
+                if not extract_success:
+                    print_warning(f"Log extraction failed for {machine_name}.")
+                    prep_extract_failures.append(machine_name)
+                    # Continue to next machine
+                else:
+                    print_success(f"Log extraction successful for {machine_name}.")
+                    
+                    # Step 3: Upload to MinIO
+                    print_step(f"Uploading logs for {machine_name} to MinIO...")
+                    upload_success = upload_to_minio(machine_name, str(base_output_dir))
+                    
+                    if not upload_success:
+                        print_warning(f"MinIO upload failed for {machine_name}.")
+                        prep_extract_failures.append(f"{machine_name} (upload)")
+                        # Continue to next machine
+                    else:
+                        print_success(f"MinIO upload successful for {machine_name}.")
+
+            if prep_extract_failures:
+                print_warning(f"Preparation or extraction failed for: {', '.join(prep_extract_failures)}")
+                overall_success = False # Mark overall run as potentially incomplete
+
+        # Step 4: Master process call REMOVED
+        # print_section("Skipping Master Process (Upload & Analysis) as requested.")
+        # master_success = run_master_process() # <--- REMOVED THIS CALL
+        # if not master_success:
+        #     overall_success = False
         
-        print_success("Machine status counts updated in MongoDB.")
-        return True
+        # Final report
+        elapsed_time = time.time() - start_time
+        print_section("Preparation, Extraction & Upload Complete")
+        print(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Total execution time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+        print(f"Output logs (if successful) are located in: {base_output_dir}")
+        print(f"Files have also been uploaded to MinIO (if successful).")
+        print(f"You can now manually run 'python master.py' to analyze the data.")
+        
+        if overall_success:
+            print_success("Preparation, Extraction & Upload workflow completed successfully.")
+        else:
+            print_warning("Preparation, Extraction & Upload workflow completed with one or more failures.")
+            
+        return overall_success
+        
     except Exception as e:
-        print_error(f"Failed to update machine status counts in MongoDB: {str(e)}")
-        logging.error(f"MongoDB update failed: {str(e)}")
+        print_error(f"Project execution (Prep & Extract) failed critically: {str(e)}")
         traceback.print_exc()
         return False
 
-def main():
-    print_section("Starting oldclient.py")
-
-    # Define paths
-    base_output_dir = "./output"
-    installsetlog_path = os.path.join(base_output_dir, "installSetLogs.log")
-    cidebug_path = os.path.join(base_output_dir, "ciDebug.log")
-
-    # 1. Cleanup previous data
-    if not cleanup_directories(base_source_dir, base_output_dir):
-        sys.exit(1)
-
-    # 2. Setup virtual environment
-    if not setup_virtual_environment():
-        sys.exit(1)
-
-    # 3. Prepare machine (dummy for now, replace with actual logic)
-    print_section("Preparing Machine")
-    try:
-        os.makedirs(base_output_dir, exist_ok=True)
-
-        # --- SIMULATE SUCCESS OR FAILURE HERE ---
-        # To simulate SUCCESS:
-        # with open(installsetlog_path, "w") as f:
-        #     f.write('{"update_type": "Offline"}')
-        # with open(cidebug_path, "w") as f:
-        #     f.write('fetchFailedComponentList Total number of failed components for server name: xxx, bay yyy uuid: zzz 0\nAbsaroka Firmware update is complete for server: aaa')
-        # print_success("Dummy log files created for SUCCESS testing.")
-
-        # To simulate FAILURE (uncomment the following lines and comment out the SUCCESS lines above):
-        with open(installsetlog_path, "w") as f:
-            f.write('{"update_type": "Offline"}')
-        with open(cidebug_path, "w") as f:
-            f.write('Some other log content that does not match success conditions')
-        print_warning("Dummy log files created for FAILURE testing.")
-
-    except Exception as e:
-        print_error(f"Failed to prepare machine: {str(e)}")
-        sys.exit(1)
-
-    # 4. Run log extraction (dummy for now, replace with actual logic)
-    print_section("Running Log Extraction")
-    try:
-        print_success("Log extraction simulated.")
-    except Exception as e:
-        print_error(f"Failed during log extraction: {str(e)}")
-        sys.exit(1)
-
-    # 5. Determine update type and check success/failure
-    print_section("Checking Firmware Update Status")
-    success_condition_met = determine_update_type_and_check(installsetlog_path, cidebug_path)
-    
-    if success_condition_met:
-        print_success("Firmware update check passed.")
-        sys.exit(0)
-    else:
-        print_error("Firmware update check failed.")
-        sys.exit(1)
-
-    # 6. Upload to MinIO (optional, can be removed if not needed)
-    # print_section("Uploading Logs to MinIO")
-    # if not upload_to_minio("test_machine", base_output_dir):
-    #     sys.exit(1)
-
-    # 7. Update MongoDB status counts (optional, can be removed if not needed)
-    # print_section("Updating MongoDB Status Counts")
-    # if success_condition_met:
-    #     update_machine_status_counts(1, 0)
-    # else:
-    #     update_machine_status_counts(0, 1)
-
-    print_section("oldclient.py Finished")
-
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)
 
 
