@@ -13,6 +13,7 @@ import traceback
 from minio import Minio
 from minio.error import S3Error
 from dotenv import load_dotenv
+from pymongo import MongoClient
 
 # Load environment variables for MinIO
 load_dotenv()
@@ -20,12 +21,19 @@ load_dotenv()
 # Define a fixed bucket name for all machines
 MINIO_BUCKET_NAME = "hpe-log-analysis"
 
-# Import shared tasks
+# Import shared tasks and success-failure check
 try:
     from shared_tasks import prepare_machine as shared_prepare_machine
     from shared_tasks import run_log_extraction as shared_run_log_extraction
-except ImportError:
-    logging.error("Failed to import from shared_tasks.py. Make sure it is in the same directory or Python path.")
+    # Import determine_update_type_and_check from success-failure.py
+    # Using importlib to handle hyphenated filename
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("success_failure", "success-failure.py")
+    success_failure = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(success_failure)
+    determine_update_type_and_check = success_failure.determine_update_type_and_check
+except ImportError as e:
+    logging.error(f"Failed to import modules: {str(e)}. Make sure shared_tasks.py and success-failure.py are in the same directory.")
     sys.exit(1)
 
 # Configure logging
@@ -357,6 +365,100 @@ def cleanup_directories(base_source_dir_str="./machines", base_output_dir_str=".
 # Removed local definitions of extract_sdmp_file, find_sdmp_files, prepare_machine, run_log_extraction
 # These are now imported from shared_tasks.py
 
+def update_machine_status_counts(success_count, failure_count):
+    """Update machine update status counts in MongoDB."""
+    try:
+        # MongoDB connection using credentials from .env
+        client = MongoClient(
+            host=os.getenv("MONGO_HOST"),
+            port=int(os.getenv("MONGO_PORT")),
+            username=os.getenv("MONGO_USER"),
+            password=os.getenv("MONGO_PASS")
+        )
+        
+        # Get or create database
+        db = client[os.getenv("MONGO_DB")]
+        
+        # Get or create Analytics collection
+        analytics_collection = db["Analytics"]
+        
+        # Get or create the machine status count document
+        status_doc = analytics_collection.find_one({"_id": "Machine update status count"})
+        
+        if status_doc is None:
+            # Create new document if it doesn't exist
+            analytics_collection.insert_one({
+                "_id": "Machine update status count",
+                "successful_updates": success_count,
+                "failed_updates": failure_count
+            })
+        else:
+            # Update existing document
+            analytics_collection.update_one(
+                {"_id": "Machine update status count"},
+                {
+                    "$inc": {
+                        "successful_updates": success_count,
+                        "failed_updates": failure_count
+                    }
+                }
+            )
+        
+        print_success(f"Updated MongoDB analytics: {success_count} successes, {failure_count} failures")
+        logging.info(f"Updated MongoDB analytics: {success_count} successes, {failure_count} failures")
+        
+    except Exception as e:
+        error_msg = f"Failed to update MongoDB analytics: {str(e)}"
+        print_error(error_msg)
+        logging.error(error_msg)
+        traceback.print_exc()
+
+def check_firmware_update_status(machine_name, base_output_dir_str="./output"):
+    """
+    Check if the firmware update was successful or a failure for the given machine.
+    Returns True if success, False if failure or error.
+    """
+    try:
+        output_path = os.path.join(base_output_dir_str, machine_name)
+        installsetlog_path = os.path.join(output_path, "installSetLogs.log")
+        cidebug_path = os.path.join(output_path, "ciDebug.log")
+        
+        # Check if required log files exist
+        if not os.path.isfile(installsetlog_path):
+            warning_msg = f"installSetLogs.log not found for {machine_name} at {installsetlog_path}"
+            logging.warning(warning_msg)
+            print_warning(warning_msg)
+            return False
+            
+        if not os.path.isfile(cidebug_path):
+            warning_msg = f"ciDebug.log not found for {machine_name} at {cidebug_path}"
+            logging.warning(warning_msg)
+            print_warning(warning_msg)
+            return False
+        
+        # Call the determine_update_type_and_check function to check status
+        result = determine_update_type_and_check(installsetlog_path, cidebug_path)
+        logging.info(f"Firmware update status for {machine_name}: {result}")
+        
+        # Check if result indicates success (look for "✅" in the result string)
+        if "✅" in result:
+            success_msg = f"Firmware update was SUCCESSFUL for {machine_name}: {result}"
+            logging.info(success_msg)
+            print_success(success_msg)
+            return True
+        else:
+            failure_msg = f"Firmware update FAILED for {machine_name}: {result}"
+            logging.info(failure_msg)
+            print_warning(failure_msg)
+            return False
+            
+    except Exception as e:
+        error_msg = f"Error checking firmware update status for {machine_name}: {str(e)}"
+        logging.error(error_msg)
+        print_error(error_msg)
+        traceback.print_exc()
+        return False
+
 # Removed run_master_process() function as it's no longer called from here.
 # def run_master_process(): ...
 
@@ -371,6 +473,8 @@ def main():
     base_output_dir = Path("./output")
     
     overall_success = True
+    success_count = 0  # Track successful updates
+    failure_count = 0  # Track failed updates
     
     try:
         # Step 1: Setup environment
@@ -427,16 +531,44 @@ def main():
                 else:
                     print_success(f"Log extraction successful for {machine_name}.")
                     
-                    # Step 3: Upload to MinIO
-                    print_step(f"Uploading logs for {machine_name} to MinIO...")
-                    upload_success = upload_to_minio(machine_name, str(base_output_dir))
+                    # Check firmware update status
+                    print_step(f"Checking firmware update status for {machine_name}...")
+                    is_update_success = check_firmware_update_status(machine_name, str(base_output_dir))
                     
-                    if not upload_success:
-                        print_warning(f"MinIO upload failed for {machine_name}.")
-                        prep_extract_failures.append(f"{machine_name} (upload)")
-                        # Continue to next machine
+                    # Only proceed with upload if update was a failure
+                    if is_update_success:
+                        success_count += 1  # Increment success counter
+                        print_step(f"Skipping MinIO upload for {machine_name} as firmware update was successful.")
+                        logging.info(f"Skipped MinIO upload for {machine_name} as firmware update was successful.")
+                        
+                        # Remove the machine's output directory to prevent master.py from processing it
+                        try:
+                            machine_output_path = os.path.join(str(base_output_dir), machine_name)
+                            if os.path.exists(machine_output_path):
+                                print_step(f"Removing output directory for {machine_name} to prevent further processing...")
+                                shutil.rmtree(machine_output_path)
+                                print_success(f"Successfully removed output directory for {machine_name}")
+                                logging.info(f"Removed output directory for {machine_name} at {machine_output_path}")
+                            else:
+                                print_warning(f"Output directory for {machine_name} not found at {machine_output_path}")
+                                logging.warning(f"Output directory for {machine_name} not found at {machine_output_path}")
+                        except Exception as e:
+                            error_msg = f"Failed to remove output directory for {machine_name}: {str(e)}"
+                            print_error(error_msg)
+                            logging.error(error_msg)
+                            traceback.print_exc()
                     else:
-                        print_success(f"MinIO upload successful for {machine_name}.")
+                        # Step 3: Upload to MinIO (only if update failed)
+                        failure_count += 1  # Increment failure counter
+                        print_step(f"Uploading logs for {machine_name} to MinIO (update failure detected)...")
+                        upload_success = upload_to_minio(machine_name, str(base_output_dir))
+                        
+                        if not upload_success:
+                            print_warning(f"MinIO upload failed for {machine_name}.")
+                            prep_extract_failures.append(f"{machine_name} (upload)")
+                            # Continue to next machine
+                        else:
+                            print_success(f"MinIO upload successful for {machine_name}.")
 
             if prep_extract_failures:
                 print_warning(f"Preparation or extraction failed for: {', '.join(prep_extract_failures)}")
@@ -456,6 +588,12 @@ def main():
         print(f"Output logs (if successful) are located in: {base_output_dir}")
         print(f"Files have also been uploaded to MinIO (if successful).")
         print(f"You can now manually run 'python master.py' to analyze the data.")
+        
+        # Update MongoDB with machine update statistics
+        if success_count > 0 or failure_count > 0:
+            print_section("Updating MongoDB Analytics")
+            print_step(f"Recording machine update statistics: {success_count} successes, {failure_count} failures")
+            update_machine_status_counts(success_count, failure_count)
         
         if overall_success:
             print_success("Preparation, Extraction & Upload workflow completed successfully.")
